@@ -1,8 +1,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { gsap } from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+
+gsap.registerPlugin(ScrollTrigger);
 
 (function () {
-  const SHIP_SCENE_VERSION = 'scroll-flight-2026-07-27';
+  const SHIP_SCENE_VERSION = 'gsap-scroll-flight-2026-07-27';
   console.log('[ranu.win] warp-ship.js loaded:', SHIP_SCENE_VERSION);
 
   const canvas = document.getElementById('warp-canvas');
@@ -157,11 +161,13 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   scene.add(ship);
 
   // ---------- Flight path: one waypoint per section, ship+camera travel it as the page scrolls ----------
+  // Lateral swing is intentionally mild (a few units, not a slalom) so the ride reads as a calm
+  // glide between destinations rather than a dizzying weave.
   const waypointDefs = [
     { id: 'hero', pos: new THREE.Vector3(0, SHIP_BASE_Y, 0) },
-    { id: 'about', pos: new THREE.Vector3(-9, SHIP_BASE_Y + 2.2, -80) },
-    { id: 'experience', pos: new THREE.Vector3(10, SHIP_BASE_Y - 1.5, -170) },
-    { id: 'skills', pos: new THREE.Vector3(-8, SHIP_BASE_Y + 3, -250) },
+    { id: 'about', pos: new THREE.Vector3(-4, SHIP_BASE_Y + 1, -80) },
+    { id: 'experience', pos: new THREE.Vector3(4.5, SHIP_BASE_Y - 0.6, -170) },
+    { id: 'skills', pos: new THREE.Vector3(-4, SHIP_BASE_Y + 1.2, -250) },
     { id: 'contact', pos: new THREE.Vector3(0, SHIP_BASE_Y, -330) }
   ];
   const flightCurve = new THREE.CatmullRomCurve3(waypointDefs.map((w) => w.pos), false, 'catmullrom', 0.5);
@@ -172,33 +178,38 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     const mat = new THREE.SpriteMaterial({ map: glowTexture, color: 0x7c9bff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
     const sprite = new THREE.Sprite(mat);
     sprite.position.copy(w.pos);
-    sprite.scale.setScalar(6);
+    sprite.scale.setScalar(4);
     scene.add(sprite);
-    const light = new THREE.PointLight(0x7c9bff, 0, 30);
+    const light = new THREE.PointLight(0x7c9bff, 0, 24);
     light.position.copy(w.pos);
     scene.add(light);
     return { sprite, light, pos: w.pos };
   });
 
-  // ---------- Scroll -> flight-curve parameter t ----------
-  let breakpoints = waypointDefs.map(() => 0);
-  function computeBreakpoints() {
-    const els = waypointDefs.map((w) => document.querySelector(`[data-waypoint="${w.id}"]`));
-    breakpoints = els.map((el) => (el ? el.getBoundingClientRect().top + window.scrollY : 0));
-  }
-  function scrollT() {
-    const y = window.scrollY;
-    if (y <= breakpoints[0]) return 0;
+  // ---------- Scroll -> flight-curve parameter t, driven by GSAP ScrollTrigger ----------
+  // One scrubbed tween per section-to-section leg: each leg owns flightState.t only while its
+  // own DOM section is the one crossing the viewport, and ScrollTrigger's `scrub` eases the
+  // value toward the scroll position instead of snapping to it every frame — this is what
+  // removes the jitter a hand-rolled per-frame lerp couldn't fully smooth out.
+  const flightState = { t: 0 };
+  function setupScrollTriggers() {
+    ScrollTrigger.getAll().forEach((st) => st.kill());
     for (let i = 0; i < NUM_SEGMENTS; i++) {
-      const isLast = i === NUM_SEGMENTS - 1;
-      if (y <= breakpoints[i + 1] || isLast) {
-        const span = Math.max(breakpoints[i + 1] - breakpoints[i], 1);
-        const frac = clamp((y - breakpoints[i]) / span, 0, 1);
-        return (i + frac) / NUM_SEGMENTS;
-      }
+      const startEl = document.querySelector(`[data-waypoint="${waypointDefs[i].id}"]`);
+      const endEl = document.querySelector(`[data-waypoint="${waypointDefs[i + 1].id}"]`);
+      if (!startEl || !endEl) continue;
+      gsap.timeline({
+        scrollTrigger: {
+          trigger: startEl,
+          start: 'top top',
+          endTrigger: endEl,
+          end: 'top top',
+          scrub: reducedMotion ? true : 1
+        }
+      }).fromTo(flightState, { t: i / NUM_SEGMENTS }, { t: (i + 1) / NUM_SEGMENTS, ease: 'none' });
     }
-    return 1;
   }
+  window.addEventListener('load', () => ScrollTrigger.refresh());
 
   // ---------- Warp starfield: parallax layers recentred on the camera every frame, so the tunnel
   // travels with the ship along the whole flight path instead of sitting at a fixed world position ----------
@@ -362,12 +373,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     renderer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    computeBreakpoints();
   }
   window.addEventListener('resize', resize);
-  window.addEventListener('load', computeBreakpoints);
   resize();
-  computeBreakpoints();
+  setupScrollTriggers();
 
   // ---------- Intro sequence: unchanged from V1, ship settles onto the flight path's start point ----------
   const REST_SCALE = 1.5;
@@ -402,7 +411,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   const tmpRight = new THREE.Vector3();
   const tmpCamTarget = new THREE.Vector3();
   const tmpLookTarget = new THREE.Vector3();
-  let smoothT = 0;
   let active = true;
 
   document.addEventListener('visibilitychange', () => { active = !document.hidden; });
@@ -426,38 +434,35 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       if (t >= 1) {
         introStageIndex++;
         introStageT = 0;
-        if (introStageIndex >= introStageDurations.length) {
-          introDone = true;
-          smoothT = scrollT();
-        }
+        if (introStageIndex >= introStageDurations.length) introDone = true;
       }
       camera.position.set(REST_POS.x, REST_POS.y + CAM_HEIGHT, REST_POS.z + CAM_DISTANCE);
       camera.lookAt(REST_POS.x, REST_POS.y, REST_POS.z - LOOKAHEAD);
     } else if (modelReady) {
-      const targetT = scrollT();
-      smoothT = reducedMotion ? targetT : THREE.MathUtils.lerp(smoothT, targetT, Math.min(dt * 4, 1));
-
-      const shipPoint = flightCurve.getPoint(clamp(smoothT, 0, 1));
-      tmpTangent.copy(flightCurve.getTangent(clamp(smoothT, 0.001, 0.999))).normalize();
+      // flightState.t is driven entirely by GSAP ScrollTrigger's scrub (see setupScrollTriggers),
+      // already eased against scroll position — no extra per-frame smoothing needed here.
+      const t = clamp(flightState.t, 0, 1);
+      const shipPoint = flightCurve.getPoint(t);
+      tmpTangent.copy(flightCurve.getTangent(clamp(t, 0.001, 0.999))).normalize();
       tmpRight.crossVectors(tmpTangent, tmpUp).normalize();
 
       ship.position.copy(shipPoint);
       const yawTarget = Math.atan2(tmpTangent.x, tmpTangent.z) + Math.PI;
       ship.rotation.y = THREE.MathUtils.lerp(ship.rotation.y, yawTarget, Math.min(dt * 3, 1));
-      ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -input.x * 0.4, dt * 4);
-      ship.rotation.x = THREE.MathUtils.lerp(ship.rotation.x, input.y * 0.2, dt * 4);
+      ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -input.x * 0.25, dt * 4);
+      ship.rotation.x = THREE.MathUtils.lerp(ship.rotation.x, input.y * 0.12, dt * 4);
 
       tmpCamTarget.copy(shipPoint)
         .addScaledVector(tmpTangent, -CAM_DISTANCE)
         .addScaledVector(tmpUp, CAM_HEIGHT)
-        .addScaledVector(tmpRight, input.x * 1.5);
+        .addScaledVector(tmpRight, input.x * 0.6);
       camera.position.lerp(tmpCamTarget, Math.min(dt * 5, 1));
 
       tmpLookTarget.copy(shipPoint)
         .addScaledVector(tmpTangent, LOOKAHEAD)
-        .addScaledVector(tmpUp, input.y * 1.2);
+        .addScaledVector(tmpUp, input.y * 0.5);
       camera.lookAt(tmpLookTarget);
-      camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.06, dt * 4);
+      camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.03, dt * 4);
 
       // Waypoint beacons brighten as the ship closes in, so arriving at a section reads as
       // "reaching a destination" rather than just scrolling past a marker.
