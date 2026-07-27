@@ -12,7 +12,7 @@
 
   <canvas id="warp-canvas"></canvas>
 
-  <header id="hero">
+  <header id="hero" class="section" data-waypoint="hero">
     <nav class="hero-nav">
       <span class="logo">RG.</span>
       <div class="nav-links">
@@ -34,14 +34,14 @@
     </div>
 
     <div class="scroll-cue">
-      <span>Scroll</span>
+      <span>Scroll to fly</span>
       <div class="scroll-line"></div>
     </div>
   </header>
 
   <main>
-    <section id="about" class="section">
-      <div class="container">
+    <section id="about" class="section" data-waypoint="about">
+      <div class="container panel">
         <h2 class="section-title"><span>01.</span> About</h2>
         <p class="about-text">
           Fullstack Developer with a love for UI/UX. I believe good design and good code go
@@ -56,8 +56,8 @@
       </div>
     </section>
 
-    <section id="experience" class="section">
-      <div class="container">
+    <section id="experience" class="section" data-waypoint="experience">
+      <div class="container panel">
         <h2 class="section-title"><span>02.</span> Experience</h2>
         <div class="timeline">
 
@@ -149,8 +149,8 @@
       </div>
     </section>
 
-    <section id="skills" class="section">
-      <div class="container">
+    <section id="skills" class="section" data-waypoint="skills">
+      <div class="container panel">
         <h2 class="section-title"><span>03.</span> Skills</h2>
         <div class="skills-grid">
           <div class="skill-group">
@@ -193,8 +193,8 @@
       </div>
     </section>
 
-    <section id="contact" class="section">
-      <div class="container contact-container">
+    <section id="contact" class="section" data-waypoint="contact">
+      <div class="container contact-container panel">
         <h2 class="section-title"><span>04.</span> Get in touch</h2>
         <p class="about-text">Open to collaboration and product-focused roles. Reach out any time.</p>
         <div class="contact-links">
@@ -206,7 +206,7 @@
   </main>
 
   <footer>
-    <p>&copy; <span id="year"></span> Ranushka Goonesekere · <a href="v2/">Try the 3D flythrough (V2)</a></p>
+    <p>&copy; <span id="year"></span> Ranushka Goonesekere</p>
   </footer>
 
   <script type="importmap">

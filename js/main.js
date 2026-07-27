@@ -11,4 +11,17 @@
       }
     });
   });
+
+  // Fades each section's glass panel in as the ship arrives (see .in-view in style.css).
+  const sections = document.querySelectorAll('.section');
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        entry.target.classList.toggle('in-view', entry.isIntersecting);
+      });
+    }, { threshold: 0.35 });
+    sections.forEach((section) => io.observe(section));
+  } else {
+    sections.forEach((section) => section.classList.add('in-view'));
+  }
 })();

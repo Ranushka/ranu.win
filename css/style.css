@@ -33,14 +33,22 @@ body {
   background: #000;
 }
 
-#hero {
+/* Every section (including the hero) is a full-viewport "scroll stop" along the flight
+   path — transparent so the 3D scene stays visible behind/around the content the whole
+   time, instead of the opaque background V1 uses past the hero. */
+.section {
   position: relative;
-  height: 100vh;
-  min-height: 560px;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: center;
   z-index: 1;
+  padding: 100px 0;
+}
+
+#hero.section {
+  justify-content: space-between;
+  padding: 0;
   pointer-events: none;
 }
 
@@ -149,16 +157,24 @@ body {
   50% { opacity: 1; transform: scaleY(1); transform-origin: top; }
 }
 
-main {
-  position: relative;
-  z-index: 1;
-  background: var(--bg-elevated);
-  border-top: 1px solid var(--border);
-}
-
-.section { padding: 100px 0; border-bottom: 1px solid var(--border); }
+main { position: relative; z-index: 1; }
 
 .container { max-width: var(--max-width); margin: 0 auto; padding: 0 6vw; }
+
+/* Frosted glass panel behind section content, so text stays readable over the moving
+   starfield/ship without hiding the scene the way V1's opaque section background did. */
+.panel {
+  background: rgba(5, 6, 10, 0.45);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 56px 6vw;
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+
+.section.in-view .panel { opacity: 1; transform: translateY(0); }
 
 .section-title {
   font-size: 1.8rem;
@@ -273,7 +289,6 @@ main {
 footer {
   position: relative;
   z-index: 1;
-  background: var(--bg-elevated);
   text-align: center;
   padding: 28px 0;
   color: var(--text-dim);
@@ -286,4 +301,10 @@ footer a { color: var(--accent-2); }
   .timeline-item { grid-template-columns: 1fr; }
   .hero-nav { padding: 20px 5vw; }
   .nav-links a { margin-left: 16px; font-size: 0.8rem; }
+  .panel { padding: 36px 6vw; border-radius: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel { transition: opacity 0.2s ease; transform: none; }
+  html { scroll-behavior: auto; }
 }

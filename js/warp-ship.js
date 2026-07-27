@@ -2,23 +2,20 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 (function () {
-  const SHIP_SCENE_VERSION = 'v34-continuous-streak-length-2026-07-24';
+  const SHIP_SCENE_VERSION = 'scroll-flight-2026-07-27';
   console.log('[ranu.win] warp-ship.js loaded:', SHIP_SCENE_VERSION);
 
   const canvas = document.getElementById('warp-canvas');
-  const hero = document.getElementById('hero');
   if (!canvas) return;
 
-  // Rough low-power heuristic (few CPU cores, low device memory, or a mobile UA) — cuts star
-  // counts and render resolution on weaker devices instead of dropping frames on all of them.
   const isLowPower = (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
     (navigator.deviceMemory && navigator.deviceMemory <= 4) ||
     /Mobi|Android/i.test(navigator.userAgent);
   const STAR_SCALE = isLowPower ? 0.45 : 1;
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isLowPower, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isLowPower ? 1.5 : 2));
-  // Compresses bright values instead of hard-clipping them to white (e.g. high-emissiveIntensity engine glow).
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
 
@@ -33,23 +30,19 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   const keyLight = new THREE.DirectionalLight(0xcfdaff, 1.1);
   keyLight.position.set(2, 4, 3);
   scene.add(keyLight);
-  // Blue-gray fill light on the ship, from the reference palette
   const shipFillLight = new THREE.DirectionalLight(0xf5843e, 1.8);
   shipFillLight.position.set(-3, 1, -2);
   scene.add(shipFillLight);
 
-  // ---------- Ship: real 3D model (converted from a user-supplied USDZ scan/asset), with a small procedural fallback ----------
+  // ---------- Ship ----------
   const ship = new THREE.Group();
+  ship.rotation.order = 'YXZ'; // yaw (path heading) applied before pitch/bank, avoids gimbal fighting on tight turns
   const flames = [];
-  const SHIP_TARGET_SIZE = 2.8; // largest dimension, in scene units, after auto-scaling the loaded model
-  const SHIP_BASE_Y = 1.2; // vertical resting height for both the ship and the star tunnel (they must match)
-  let modelReady = false; // gates the intro fly-in so it doesn't finish before the model is actually visible
-
-  // Engine point lights are created once the real model loads and its engine/turbine meshes
-  // are found (see loader below) — no guessed offsets, positioned from actual mesh geometry.
+  const SHIP_TARGET_SIZE = 2.8;
+  const SHIP_BASE_Y = 1.2;
+  let modelReady = false;
   const thrusterLights = [];
 
-  // ---------- Engine plasma glow (soft radial sprite, additive-blended, layered over the real emissive geometry) ----------
   function makeGlowTexture() {
     const size = 128;
     const c = document.createElement('canvas');
@@ -72,8 +65,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   }
   const glowTexture = makeGlowTexture();
 
-  // Adds a small additive glow sprite plus a point light at a mesh's own world position
-  // (converted into pivot-local space by the caller), sized relative to that mesh's own bounds.
   function makeEnginePlasma(parent, localPos, glowSize) {
     const mat = new THREE.SpriteMaterial({ map: glowTexture, color: 0x4fc8ff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.8 });
     const sprite = new THREE.Sprite(mat);
@@ -105,7 +96,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     modelReady = true;
   }
 
-  const shipBaseTint = new THREE.Color(0xdedaca); // beige/cream, from the reference palette
+  const shipBaseTint = new THREE.Color(0xdedaca);
 
   const loader = new GLTFLoader();
   loader.load(
@@ -125,15 +116,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       const pivot = new THREE.Group();
       pivot.add(model);
       pivot.scale.setScalar(scaleFactor);
-      // If the model faces the wrong way once live, adjust this yaw in 90-degree steps.
       pivot.rotation.y = Math.PI;
       ship.add(pivot);
 
-      // Engine/turbine/exhaust parts, identified by their real material names from the model
-      // (Engine_A, Engine_B, Booster_Turbine, Turbine_Rear_Emission, ...) instead of guessed
-      // offsets. Their own baked emissive textures (the glow-ring detail) get lit up with a
-      // bright blue tint; a small additive sprite + point light is added at each exhaust mesh's
-      // own world position for extra "plasma" bloom.
       const ENGINE_NAME_RE = /engine|turbine|booster/i;
       const enginePlasmaBudget = { count: 0 };
       model.traverse((obj) => {
@@ -142,18 +127,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         obj.receiveShadow = false;
 
         const isEngine = ENGINE_NAME_RE.test(obj.material.name || '') || ENGINE_NAME_RE.test(obj.name || '');
-        // Only tint blue where there's an actual emissive texture to mask it — otherwise the
-        // whole (untextured) mesh surface would flood solid blue instead of just its glow spots.
         if (isEngine && obj.material.emissiveMap) {
           obj.material.emissive = new THREE.Color(0x4fc8ff);
-          obj.material.emissiveIntensity = 1.5; // higher clips to white (blue channel > 1.0 with no tone mapping)
+          obj.material.emissiveIntensity = 1.5;
         } else if (!isEngine) {
           obj.material.color = obj.material.color ? obj.material.color.multiply(shipBaseTint) : shipBaseTint.clone();
           obj.material.emissiveIntensity = Math.max(obj.material.emissiveIntensity || 0, 0.6);
         }
 
-        // Only the actual rear-exhaust glow parts get a bloom sprite + light (not the whole
-        // engine housing), and cap it so we don't spawn a light per tiny sub-mesh.
         if (/rear_emission/i.test(obj.name || '') && enginePlasmaBudget.count < 4) {
           const meshBox = new THREE.Box3().setFromObject(obj);
           const meshCenter = meshBox.getCenter(new THREE.Vector3()).sub(center);
@@ -175,11 +156,54 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
   scene.add(ship);
 
+  // ---------- Flight path: one waypoint per section, ship+camera travel it as the page scrolls ----------
+  const waypointDefs = [
+    { id: 'hero', pos: new THREE.Vector3(0, SHIP_BASE_Y, 0) },
+    { id: 'about', pos: new THREE.Vector3(-9, SHIP_BASE_Y + 2.2, -80) },
+    { id: 'experience', pos: new THREE.Vector3(10, SHIP_BASE_Y - 1.5, -170) },
+    { id: 'skills', pos: new THREE.Vector3(-8, SHIP_BASE_Y + 3, -250) },
+    { id: 'contact', pos: new THREE.Vector3(0, SHIP_BASE_Y, -330) }
+  ];
+  const flightCurve = new THREE.CatmullRomCurve3(waypointDefs.map((w) => w.pos), false, 'catmullrom', 0.5);
+  const NUM_SEGMENTS = waypointDefs.length - 1;
 
-  // ---------- Warp starfield: 5 parallax layers (stopped -> slow -> medium -> fast -> very fast) ----------
-  const FAR_Z = -900;
-  const NEAR_Z = 12;
-  const STREAK_LEN_SCALE = 1.5; // tuned so continuous angular-velocity-based length ~matches the old fixed-band look
+  // Glowing beacons mark each destination (not the hero start) so arrival reads as "reaching a place."
+  const waypointMarkers = waypointDefs.slice(1).map((w) => {
+    const mat = new THREE.SpriteMaterial({ map: glowTexture, color: 0x7c9bff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    const sprite = new THREE.Sprite(mat);
+    sprite.position.copy(w.pos);
+    sprite.scale.setScalar(6);
+    scene.add(sprite);
+    const light = new THREE.PointLight(0x7c9bff, 0, 30);
+    light.position.copy(w.pos);
+    scene.add(light);
+    return { sprite, light, pos: w.pos };
+  });
+
+  // ---------- Scroll -> flight-curve parameter t ----------
+  let breakpoints = waypointDefs.map(() => 0);
+  function computeBreakpoints() {
+    const els = waypointDefs.map((w) => document.querySelector(`[data-waypoint="${w.id}"]`));
+    breakpoints = els.map((el) => (el ? el.getBoundingClientRect().top + window.scrollY : 0));
+  }
+  function scrollT() {
+    const y = window.scrollY;
+    if (y <= breakpoints[0]) return 0;
+    for (let i = 0; i < NUM_SEGMENTS; i++) {
+      const isLast = i === NUM_SEGMENTS - 1;
+      if (y <= breakpoints[i + 1] || isLast) {
+        const span = Math.max(breakpoints[i + 1] - breakpoints[i], 1);
+        const frac = clamp((y - breakpoints[i]) / span, 0, 1);
+        return (i + frac) / NUM_SEGMENTS;
+      }
+    }
+    return 1;
+  }
+
+  // ---------- Warp starfield: parallax layers recentred on the camera every frame, so the tunnel
+  // travels with the ship along the whole flight path instead of sitting at a fixed world position ----------
+  const NEAR_LOCAL = 12;
+  const FAR_LOCAL = -400;
   const colorA = new THREE.Color(0xffffff);
   const colorB = new THREE.Color(0x7c9bff);
   const colorC = new THREE.Color(0x5eead4);
@@ -189,8 +213,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     return r < 0.75 ? colorA.clone().lerp(colorB, Math.random()) : colorA.clone().lerp(colorC, Math.random() * 0.7);
   }
 
-  // Layer 0 — distant backdrop; drifts slowly (rotation, in the animate loop below) rather than
-  // sitting fully static, so every star layer has some motion.
   const BG_STAR_COUNT = Math.round(1600 * STAR_SCALE);
   const bgGeom = new THREE.BufferGeometry();
   const bgPositions = new Float32Array(BG_STAR_COUNT * 3);
@@ -212,7 +234,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   const bgStars = new THREE.Points(bgGeom, bgMat);
   scene.add(bgStars);
 
-  // Layers 1-4 — streaking tunnel stars, each with its own speed/length/radius band
   function makeStreakLayer(opts) {
     const count = Math.max(1, Math.round(opts.count * STAR_SCALE));
     const geom = new THREE.BufferGeometry();
@@ -222,18 +243,17 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
     function resetStar(i) {
       const angle = Math.random() * Math.PI * 2;
-      // sqrt-biased radius: denser near the tunnel's core, thinning toward the rim
       const radius = opts.radiusMin + Math.sqrt(Math.random()) * (opts.radiusMax - opts.radiusMin);
       stars[i] = {
         x: Math.cos(angle) * radius,
         y: Math.sin(angle) * radius * 0.6,
-        z: FAR_Z - Math.random() * 400,
+        z: FAR_LOCAL - Math.random() * 400,
         speed: opts.speedMin + Math.random() * (opts.speedMax - opts.speedMin)
       };
     }
     for (let i = 0; i < count; i++) {
       resetStar(i);
-      stars[i].z = FAR_Z + Math.random() * (NEAR_Z - FAR_Z);
+      stars[i].z = FAR_LOCAL + Math.random() * (NEAR_LOCAL - FAR_LOCAL);
       const c = pickColor();
       const i6 = i * 6;
       colors[i6] = colors[i6 + 3] = c.r;
@@ -251,25 +271,21 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     scene.add(lines);
 
     return {
-      update(dt, globalSpeed) {
+      update(dt, globalSpeed, camPos) {
         const posAttr = geom.attributes.position;
         for (let i = 0; i < count; i++) {
           const s = stars[i];
           s.z += globalSpeed * s.speed * dt;
-          if (s.z > NEAR_Z) resetStar(i);
-          // Streak length follows apparent (angular) velocity — real speed divided by distance
-          // from the camera — rather than a fixed random length per star. This matches the
-          // motion-streak literature (Geisler 1999): perceived streak length tracks how fast a
-          // point sweeps across the visual field, which grows as it gets closer, not a constant.
-          const dist = Math.max(NEAR_Z - s.z, 0.6);
-          const len = clamp((STREAK_LEN_SCALE * globalSpeed * s.speed) / dist, opts.lenMin, opts.lenMax);
+          if (s.z > NEAR_LOCAL) resetStar(i);
+          const dist = Math.max(NEAR_LOCAL - s.z, 0.6);
+          const len = clamp((1.5 * globalSpeed * s.speed) / dist, opts.lenMin, opts.lenMax);
           const i6 = i * 6;
-          posAttr.array[i6] = s.x;
-          posAttr.array[i6 + 1] = s.y + SHIP_BASE_Y;
-          posAttr.array[i6 + 2] = s.z;
-          posAttr.array[i6 + 3] = s.x;
-          posAttr.array[i6 + 4] = s.y + SHIP_BASE_Y;
-          posAttr.array[i6 + 5] = s.z - len;
+          posAttr.array[i6] = camPos.x + s.x;
+          posAttr.array[i6 + 1] = camPos.y + s.y;
+          posAttr.array[i6 + 2] = camPos.z + s.z;
+          posAttr.array[i6 + 3] = camPos.x + s.x;
+          posAttr.array[i6 + 4] = camPos.y + s.y;
+          posAttr.array[i6 + 5] = camPos.z + s.z - len;
         }
         posAttr.needsUpdate = true;
       }
@@ -277,26 +293,20 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   }
 
   const streakLayers = [
-    // Layer 1 — slow drift, far out
     makeStreakLayer({ count: 500, radiusMin: 20, radiusMax: 42, speedMin: 0.15, speedMax: 0.3, lenMin: 0.5, lenMax: 1.2, opacity: 0.55 }),
-    // Layer 2 — medium
     makeStreakLayer({ count: 650, radiusMin: 13, radiusMax: 29, speedMin: 0.45, speedMax: 0.7, lenMin: 1.2, lenMax: 2.5, opacity: 0.75 }),
-    // Layer 3 — fast
     makeStreakLayer({ count: 600, radiusMin: 6, radiusMax: 19, speedMin: 0.9, speedMax: 1.3, lenMin: 2.5, lenMax: 5, opacity: 0.9 }),
-    // Layer 4 — very fast, closest to the flight path, brightest streaks
     makeStreakLayer({ count: 400, radiusMin: 2, radiusMax: 11, speedMin: 1.7, speedMax: 2.5, lenMin: 4.5, lenMax: 9, opacity: 1, additive: true })
   ];
 
-  // ---------- Input: keyboard + mouse hover + touch drag ----------
+  // ---------- Input: subtle look-around only (scroll drives actual travel now) ----------
   const input = { x: 0, y: 0 };
   const keyState = {};
-  let baseSpeed = 90;
 
   window.addEventListener('keydown', (e) => { keyState[e.key.toLowerCase()] = true; });
   window.addEventListener('keyup', (e) => { keyState[e.key.toLowerCase()] = false; });
 
-  // Mouse/pen: steer just by hovering, no click needed
-  const HOVER_SENSITIVITY = 0.16; // lower = more mouse travel needed to reach full steering input
+  const HOVER_SENSITIVITY = 0.16;
   function hoverMove(clientX, clientY) {
     const nx = ((clientX / window.innerWidth) * 2 - 1) * HOVER_SENSITIVITY;
     const ny = ((clientY / window.innerHeight) * 2 - 1) * HOVER_SENSITIVITY;
@@ -304,7 +314,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     input.y = clamp(-ny, -1, 1);
   }
 
-  // Touch: no hover concept, so steer via drag instead
   let dragging = false;
   let dragStart = { x: 0, y: 0 };
   let dragOrigin = { x: 0, y: 0 };
@@ -344,7 +353,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     if (kx || ky) {
       input.x = clamp(input.x + kx * dt * 1.6, -1, 1);
       input.y = clamp(input.y + ky * dt * 1.6, -1, 1);
-      }
+    }
   }
 
   // ---------- Resize ----------
@@ -353,48 +362,27 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     renderer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    computeBreakpoints();
   }
   window.addEventListener('resize', resize);
+  window.addEventListener('load', computeBreakpoints);
   resize();
+  computeBreakpoints();
 
-  // ---------- Visibility (pause when hero off-screen / tab hidden) ----------
-  let active = true;
-  if ('IntersectionObserver' in window && hero) {
-    const io = new IntersectionObserver((entries) => {
-      active = entries[0].isIntersecting;
-    }, { threshold: 0.01 });
-    io.observe(hero);
-  }
-
-  // ---------- Animation loop ----------
-  const shipTargetPos = new THREE.Vector3();
-  const camOffset = new THREE.Vector3(0, 2.4, 6.5);
-  const camLookOffset = new THREE.Vector3(0, 0.4, -6);
-  const clock = new THREE.Clock();
-  const tmpCamPos = new THREE.Vector3();
-  const tmpLook = new THREE.Vector3();
-
-  // Intro sequence: tiny dot far down the tunnel -> eases into resting position (2x, the new
-  // baseline size) -> overshoots to 8x (4x of the new baseline) off-screen, with no stop at the
-  // top of the overshoot -> returns to resting position. After that, normal per-frame steering
-  // takes over, at the same 2x baseline. The camera (below) tracks the steady steering target
-  // throughout, not the ship's own position, so it doesn't chase the ship through this sequence.
+  // ---------- Intro sequence: unchanged from V1, ship settles onto the flight path's start point ----------
   const REST_SCALE = 1.5;
-  const REST_POS = new THREE.Vector3(0, SHIP_BASE_Y, 0);
+  const REST_POS = waypointDefs[0].pos.clone();
   const introStages = [
-    { pos: new THREE.Vector3(0, SHIP_BASE_Y, -190), scale: 0.05 },        // start: far away, tiny dot
-    { pos: REST_POS.clone(), scale: REST_SCALE },                  // arrives at resting position
-    { pos: new THREE.Vector3(0, -13, 7), scale: REST_SCALE * 4 },  // overshoots: huge, off-screen bottom
-    { pos: REST_POS.clone(), scale: REST_SCALE }                   // settles back to resting position
+    { pos: new THREE.Vector3(0, SHIP_BASE_Y, -190), scale: 0.05 },
+    { pos: REST_POS.clone(), scale: REST_SCALE },
+    { pos: new THREE.Vector3(0, -13, 7), scale: REST_SCALE * 4 },
+    { pos: REST_POS.clone(), scale: REST_SCALE }
   ];
   const introStageDurations = [2.0, 1.0, 1.5];
 
   function linear(t) { return t; }
   function easeInCubic(t) { return t * t * t; }
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-  // Stage 0 ends at full speed (no ease-out) and stage 1 starts at full speed (no ease-in),
-  // so there's no zero-velocity moment at the stage0/stage1 boundary — only stage 2 eases out
-  // to a full stop at the very end, when the ship settles into its permanent resting position.
   const introStageEasings = [easeInCubic, linear, easeOutCubic];
 
   let introStageIndex = 0;
@@ -404,16 +392,27 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   ship.position.copy(introStages[0].pos);
   ship.scale.setScalar(introStages[0].scale);
 
+  // ---------- Animation loop ----------
+  const clock = new THREE.Clock();
+  const CAM_DISTANCE = 6.5;
+  const CAM_HEIGHT = 2.0;
+  const LOOKAHEAD = 10;
+  const tmpTangent = new THREE.Vector3();
+  const tmpUp = new THREE.Vector3(0, 1, 0);
+  const tmpRight = new THREE.Vector3();
+  const tmpCamTarget = new THREE.Vector3();
+  const tmpLookTarget = new THREE.Vector3();
+  let smoothT = 0;
+  let active = true;
+
+  document.addEventListener('visibilitychange', () => { active = !document.hidden; });
+
   function animate() {
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.05);
-
-    if (!active || document.hidden) return;
+    if (!active) return;
 
     keyboardInput(dt);
-
-    // Ship target lateral/vertical position from input (kept in sync even during the intro, so the camera doesn't jump)
-    shipTargetPos.set(input.x * 5.2, SHIP_BASE_Y + input.y * 2.4, 0);
 
     if (modelReady && !introDone) {
       introStageT += dt;
@@ -427,17 +426,50 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       if (t >= 1) {
         introStageIndex++;
         introStageT = 0;
-        if (introStageIndex >= introStageDurations.length) introDone = true;
+        if (introStageIndex >= introStageDurations.length) {
+          introDone = true;
+          smoothT = scrollT();
+        }
       }
+      camera.position.set(REST_POS.x, REST_POS.y + CAM_HEIGHT, REST_POS.z + CAM_DISTANCE);
+      camera.lookAt(REST_POS.x, REST_POS.y, REST_POS.z - LOOKAHEAD);
     } else if (modelReady) {
-      ship.position.lerp(shipTargetPos, Math.min(dt * 2, 1));
+      const targetT = scrollT();
+      smoothT = reducedMotion ? targetT : THREE.MathUtils.lerp(smoothT, targetT, Math.min(dt * 4, 1));
+
+      const shipPoint = flightCurve.getPoint(clamp(smoothT, 0, 1));
+      tmpTangent.copy(flightCurve.getTangent(clamp(smoothT, 0.001, 0.999))).normalize();
+      tmpRight.crossVectors(tmpTangent, tmpUp).normalize();
+
+      ship.position.copy(shipPoint);
+      const yawTarget = Math.atan2(tmpTangent.x, tmpTangent.z) + Math.PI;
+      ship.rotation.y = THREE.MathUtils.lerp(ship.rotation.y, yawTarget, Math.min(dt * 3, 1));
+      ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -input.x * 0.4, dt * 4);
+      ship.rotation.x = THREE.MathUtils.lerp(ship.rotation.x, input.y * 0.2, dt * 4);
+
+      tmpCamTarget.copy(shipPoint)
+        .addScaledVector(tmpTangent, -CAM_DISTANCE)
+        .addScaledVector(tmpUp, CAM_HEIGHT)
+        .addScaledVector(tmpRight, input.x * 1.5);
+      camera.position.lerp(tmpCamTarget, Math.min(dt * 5, 1));
+
+      tmpLookTarget.copy(shipPoint)
+        .addScaledVector(tmpTangent, LOOKAHEAD)
+        .addScaledVector(tmpUp, input.y * 1.2);
+      camera.lookAt(tmpLookTarget);
+      camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.06, dt * 4);
+
+      // Waypoint beacons brighten as the ship closes in, so arriving at a section reads as
+      // "reaching a destination" rather than just scrolling past a marker.
+      for (const marker of waypointMarkers) {
+        const dist = shipPoint.distanceTo(marker.pos);
+        const proximity = clamp(1 - dist / 45, 0, 1);
+        const pulse = 0.85 + Math.sin(performance.now() * 0.004) * 0.15;
+        marker.sprite.material.opacity = proximity * 0.9 * pulse;
+        marker.light.intensity = proximity * 2.2 * pulse;
+      }
     }
 
-    // Banking / pitch feel
-    ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -input.x * 0.5, dt * 4);
-    ship.rotation.x = THREE.MathUtils.lerp(ship.rotation.x, input.y * 0.25, dt * 4);
-
-    // Engine plasma flicker
     const flicker = 1 + Math.sin(performance.now() * 0.02) * 0.12 + Math.random() * 0.08;
     for (const flame of flames) {
       const base = flame.userData.baseScale;
@@ -447,19 +479,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       light.intensity = 1.4 + Math.sin(performance.now() * 0.03) * 0.25 + Math.random() * 0.15;
     }
 
-    // Chase camera (NFS-style: behind + slightly above) — tracks the steering target directly,
-    // so it stays steady during the intro fly-in instead of racing the ship's temporary far position.
-    tmpCamPos.copy(shipTargetPos).add(camOffset);
-    camera.position.lerp(tmpCamPos, Math.min(dt * 5, 1));
-    tmpLook.copy(shipTargetPos).add(camLookOffset);
-    camera.lookAt(tmpLook);
-    camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.08, dt * 4);
+    const speed = 90 * (1 + Math.abs(input.x) * 0.15);
+    for (const layer of streakLayers) layer.update(dt, speed, camera.position);
 
-    // Update warp streaks across all parallax layers (infinite loop: stars stream past and recycle)
-    const speed = baseSpeed * (1 + Math.abs(input.x) * 0.15);
-    for (const layer of streakLayers) layer.update(dt, speed);
-
-    // Slow drift for the distant backdrop layer, so it isn't fully static either
+    bgStars.position.copy(camera.position);
     bgStars.rotation.y += dt * 0.006;
     bgStars.rotation.x += dt * 0.002;
 
