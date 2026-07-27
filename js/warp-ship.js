@@ -1,16 +1,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { gsap } from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { Observer } from 'gsap/Observer';
 
-gsap.registerPlugin(ScrollTrigger);
+gsap.registerPlugin(Observer);
 
 (function () {
-  const SHIP_SCENE_VERSION = 'gsap-scroll-flight-2026-07-27';
+  const SHIP_SCENE_VERSION = 'gsap-observer-quickto-2026-07-27';
   console.log('[ranu.win] warp-ship.js loaded:', SHIP_SCENE_VERSION);
 
   const canvas = document.getElementById('warp-canvas');
@@ -34,14 +30,6 @@ gsap.registerPlugin(ScrollTrigger);
   scene.fog = new THREE.FogExp2(0x03040a, 0.0019);
 
   const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 2000);
-
-  // ---------- Postprocessing: subtle bloom so engine trails / waypoint beacons / bright streaks
-  // glow instead of clipping flat, plus OutputPass for correct color-space output through the chain ----------
-  const composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
-  const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.5, 0.72);
-  composer.addPass(bloomPass);
-  composer.addPass(new OutputPass());
 
   // ---------- Lights ----------
   scene.add(new THREE.AmbientLight(0x8891b0, 1.1));
@@ -200,30 +188,38 @@ gsap.registerPlugin(ScrollTrigger);
     return { sprite, light, pos: w.pos };
   });
 
-  // ---------- Scroll -> flight-curve parameter t, driven by GSAP ScrollTrigger ----------
-  // One scrubbed tween per section-to-section leg: each leg owns flightState.t only while its
-  // own DOM section is the one crossing the viewport, and ScrollTrigger's `scrub` eases the
-  // value toward the scroll position instead of snapping to it every frame — this is what
-  // removes the jitter a hand-rolled per-frame lerp couldn't fully smooth out.
+  // ---------- Scroll -> flight-curve parameter t, driven by GSAP Observer + quickTo ----------
+  // Section pixel offsets still give the exact per-section t breakpoints (so arrival stays
+  // synced to content), but instead of ScrollTrigger's scroll-linked scrub, an Observer
+  // normalizes wheel/touch/scroll input and a quickTo() eases flightState.t toward the target
+  // on GSAP's own ticker — snappier and less laggy-feeling than a scrub timeline.
   const flightState = { t: 0 };
-  function setupScrollTriggers() {
-    ScrollTrigger.getAll().forEach((st) => st.kill());
-    for (let i = 0; i < NUM_SEGMENTS; i++) {
-      const startEl = document.querySelector(`[data-waypoint="${waypointDefs[i].id}"]`);
-      const endEl = document.querySelector(`[data-waypoint="${waypointDefs[i + 1].id}"]`);
-      if (!startEl || !endEl) continue;
-      gsap.timeline({
-        scrollTrigger: {
-          trigger: startEl,
-          start: 'top top',
-          endTrigger: endEl,
-          end: 'top top',
-          scrub: reducedMotion ? true : 1
-        }
-      }).fromTo(flightState, { t: i / NUM_SEGMENTS }, { t: (i + 1) / NUM_SEGMENTS, ease: 'none' });
-    }
+  let breakpoints = waypointDefs.map(() => 0);
+  function computeBreakpoints() {
+    breakpoints = waypointDefs.map((w) => {
+      const el = document.querySelector(`[data-waypoint="${w.id}"]`);
+      return el ? el.getBoundingClientRect().top + window.scrollY : 0;
+    });
   }
-  window.addEventListener('load', () => ScrollTrigger.refresh());
+  function scrollT() {
+    const y = window.scrollY;
+    if (y <= breakpoints[0]) return 0;
+    for (let i = 0; i < NUM_SEGMENTS; i++) {
+      const isLast = i === NUM_SEGMENTS - 1;
+      if (y <= breakpoints[i + 1] || isLast) {
+        const span = Math.max(breakpoints[i + 1] - breakpoints[i], 1);
+        const frac = clamp((y - breakpoints[i]) / span, 0, 1);
+        return (i + frac) / NUM_SEGMENTS;
+      }
+    }
+    return 1;
+  }
+  const setFlightT = gsap.quickTo(flightState, 't', { duration: reducedMotion ? 0.001 : 0.6, ease: 'power3.out' });
+  function syncFlightTarget() { setFlightT(scrollT()); }
+
+  Observer.create({ target: window, type: 'wheel,touch,scroll', tolerance: 0, onChange: syncFlightTarget });
+  window.addEventListener('resize', () => { computeBreakpoints(); syncFlightTarget(); });
+  window.addEventListener('load', () => { computeBreakpoints(); syncFlightTarget(); });
 
   // ---------- Warp starfield: parallax layers recentred on the camera every frame, so the tunnel
   // travels with the ship along the whole flight path instead of sitting at a fixed world position ----------
@@ -385,13 +381,13 @@ gsap.registerPlugin(ScrollTrigger);
   function resize() {
     const w = window.innerWidth, h = window.innerHeight;
     renderer.setSize(w, h);
-    composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
   window.addEventListener('resize', resize);
   resize();
-  setupScrollTriggers();
+  computeBreakpoints();
+  syncFlightTarget();
 
   // ---------- Intro sequence: unchanged from V1, ship settles onto the flight path's start point ----------
   const REST_SCALE = 1.5;
@@ -454,8 +450,8 @@ gsap.registerPlugin(ScrollTrigger);
       camera.position.set(REST_POS.x, REST_POS.y + CAM_HEIGHT, REST_POS.z + CAM_DISTANCE);
       camera.lookAt(REST_POS.x, REST_POS.y, REST_POS.z - LOOKAHEAD);
     } else if (modelReady) {
-      // flightState.t is driven entirely by GSAP ScrollTrigger's scrub (see setupScrollTriggers),
-      // already eased against scroll position — no extra per-frame smoothing needed here.
+      // flightState.t is driven entirely by the Observer + quickTo pair above, already eased
+      // toward the scroll-derived target — no extra per-frame smoothing needed here.
       const t = clamp(flightState.t, 0, 1);
       const shipPoint = flightCurve.getPoint(t);
       tmpTangent.copy(flightCurve.getTangent(clamp(t, 0.001, 0.999))).normalize();
@@ -513,7 +509,7 @@ gsap.registerPlugin(ScrollTrigger);
     bgStars.rotation.y += dt * 0.006;
     bgStars.rotation.x += dt * 0.002;
 
-    composer.render();
+    renderer.render(scene, camera);
   }
 
   animate();

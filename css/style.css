@@ -33,16 +33,6 @@ body {
   background: #000;
 }
 
-/* Frames the shot — darkens the edges so attention stays centered, the way a real camera lens
-   or color grade would, instead of the raw WebGL canvas reading edge-to-edge flat. */
-.vignette {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%);
-}
-
 /* Every section (including the hero) is a full-viewport "scroll stop" along the flight
    path — transparent so the 3D scene stays visible behind/around the content the whole
    time, instead of the opaque background V1 uses past the hero. */
