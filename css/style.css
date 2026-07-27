@@ -33,6 +33,16 @@ body {
   background: #000;
 }
 
+/* Frames the shot — darkens the edges so attention stays centered, the way a real camera lens
+   or color grade would, instead of the raw WebGL canvas reading edge-to-edge flat. */
+.vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.6) 100%);
+}
+
 /* Every section (including the hero) is a full-viewport "scroll stop" along the flight
    path — transparent so the 3D scene stays visible behind/around the content the whole
    time, instead of the opaque background V1 uses past the hero. */
@@ -170,11 +180,12 @@ main { position: relative; z-index: 1; }
   border-radius: 24px;
   padding: 56px 6vw;
   opacity: 0;
-  transform: translateY(28px);
-  transition: opacity 0.7s ease, transform 0.7s ease;
+  transform: translateY(28px) scale(0.97);
+  filter: blur(6px);
+  transition: opacity 0.8s ease, transform 0.8s ease, filter 0.8s ease;
 }
 
-.section.in-view .panel { opacity: 1; transform: translateY(0); }
+.section.in-view .panel { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
 
 .section-title {
   font-size: 1.8rem;
@@ -305,6 +316,6 @@ footer a { color: var(--accent-2); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .panel { transition: opacity 0.2s ease; transform: none; }
+  .panel { transition: opacity 0.2s ease; transform: none; filter: none; }
   html { scroll-behavior: auto; }
 }

@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 
@@ -24,10 +28,20 @@ gsap.registerPlugin(ScrollTrigger);
   renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x000000);
-  scene.fog = new THREE.FogExp2(0x000000, 0.0019);
+  // Near-black navy instead of pure black — a small warmth that reads as "graded footage"
+  // rather than a flat WebGL clear color.
+  scene.background = new THREE.Color(0x03040a);
+  scene.fog = new THREE.FogExp2(0x03040a, 0.0019);
 
-  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 2000);
+  const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 2000);
+
+  // ---------- Postprocessing: subtle bloom so engine trails / waypoint beacons / bright streaks
+  // glow instead of clipping flat, plus OutputPass for correct color-space output through the chain ----------
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.5, 0.72);
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
 
   // ---------- Lights ----------
   scene.add(new THREE.AmbientLight(0x8891b0, 1.1));
@@ -371,6 +385,7 @@ gsap.registerPlugin(ScrollTrigger);
   function resize() {
     const w = window.innerWidth, h = window.innerHeight;
     renderer.setSize(w, h);
+    composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
@@ -464,6 +479,13 @@ gsap.registerPlugin(ScrollTrigger);
       camera.lookAt(tmpLookTarget);
       camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.03, dt * 4);
 
+      // Small idle drift so the shot never sits perfectly still between scroll input — reads as
+      // a held cinematic camera rather than a locked-off static one.
+      if (!reducedMotion) {
+        camera.position.x += Math.sin(performance.now() * 0.00035) * 0.12;
+        camera.position.y += Math.cos(performance.now() * 0.00028) * 0.06;
+      }
+
       // Waypoint beacons brighten as the ship closes in, so arriving at a section reads as
       // "reaching a destination" rather than just scrolling past a marker.
       for (const marker of waypointMarkers) {
@@ -491,7 +513,7 @@ gsap.registerPlugin(ScrollTrigger);
     bgStars.rotation.y += dt * 0.006;
     bgStars.rotation.x += dt * 0.002;
 
-    renderer.render(scene, camera);
+    composer.render();
   }
 
   animate();
