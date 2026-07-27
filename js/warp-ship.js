@@ -417,6 +417,7 @@ gsap.registerPlugin(Observer);
   const CAM_DISTANCE = 6.5;
   const CAM_HEIGHT = 2.0;
   const LOOKAHEAD = 10;
+  const FRAME_BIAS = 2.6;
   const tmpTangent = new THREE.Vector3();
   const tmpUp = new THREE.Vector3(0, 1, 0);
   const tmpRight = new THREE.Vector3();
@@ -469,9 +470,13 @@ gsap.registerPlugin(Observer);
         .addScaledVector(tmpRight, input.x * 0.6);
       camera.position.lerp(tmpCamTarget, Math.min(dt * 5, 1));
 
+      // Section content panels sit left-aligned (see .panel in style.css) — bias the look target
+      // left of the ship so the ship itself renders in the cleared right-hand portion of the
+      // frame instead of straight ahead, where it would otherwise sit right behind the text.
       tmpLookTarget.copy(shipPoint)
         .addScaledVector(tmpTangent, LOOKAHEAD)
-        .addScaledVector(tmpUp, input.y * 0.5);
+        .addScaledVector(tmpUp, input.y * 0.5)
+        .addScaledVector(tmpRight, -FRAME_BIAS);
       camera.lookAt(tmpLookTarget);
       camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.03, dt * 4);
 

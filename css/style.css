@@ -162,13 +162,18 @@ main { position: relative; z-index: 1; }
 .container { max-width: var(--max-width); margin: 0 auto; padding: 0 6vw; }
 
 /* Frosted glass panel behind section content, so text stays readable over the moving
-   starfield/ship without hiding the scene the way V1's opaque section background did. */
+   starfield/ship without hiding the scene the way V1's opaque section background did.
+   Deliberately narrower than .container (not full-width) and left-aligned, same asymmetric
+   composition as the hero — so the ship, framed toward screen-right (see warp-ship.js), has
+   clear space to actually be visible instead of sitting blurred directly behind the text. */
 .panel {
   background: rgba(5, 6, 10, 0.45);
   backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: 24px;
   padding: 56px 6vw;
+  max-width: 620px;
+  margin: 0;
   opacity: 0;
   transform: translateY(28px) scale(0.97);
   filter: blur(6px);
