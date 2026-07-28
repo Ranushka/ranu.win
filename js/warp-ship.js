@@ -1,75 +1,223 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { gsap } from 'gsap';
-import { Observer } from 'gsap/Observer';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { MotionPathPlugin } from 'gsap/MotionPathPlugin';
 
-gsap.registerPlugin(Observer);
+gsap.registerPlugin(ScrollTrigger, MotionPathPlugin);
 
-(function () {
-  const SHIP_SCENE_VERSION = 'gsap-observer-quickto-2026-07-27';
-  console.log('[ranu.win] warp-ship.js loaded:', SHIP_SCENE_VERSION);
+const SHIP_SCENE_VERSION = 'motionpath-ship-rig-2026-07-28';
+console.log('[ranu.win] warp-ship.js loaded:', SHIP_SCENE_VERSION);
 
+const isLowPower = (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+  (navigator.deviceMemory && navigator.deviceMemory <= 4) ||
+  /Mobi|Android/i.test(navigator.userAgent);
+const STAR_SCALE = isLowPower ? 0.45 : 1;
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function makeGlowTexture() {
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.2, 'rgba(190,235,255,0.85)');
+  grad.addColorStop(0.5, 'rgba(79,200,255,0.35)');
+  grad.addColorStop(1, 'rgba(79,200,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+// ============================================================================
+// Ambient starfield — full-page background, static camera. The "warp tunnel" look comes
+// entirely from stars streaming toward the camera (classic warp-speed effect), not from the
+// camera itself moving, so it stays simple and never needs to track anything else on the page.
+// ============================================================================
+(function starfield() {
   const canvas = document.getElementById('warp-canvas');
   if (!canvas) return;
 
-  const isLowPower = (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
-    (navigator.deviceMemory && navigator.deviceMemory <= 4) ||
-    /Mobi|Android/i.test(navigator.userAgent);
-  const STAR_SCALE = isLowPower ? 0.45 : 1;
-  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isLowPower, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isLowPower ? 1.5 : 2));
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x03040a);
+  scene.fog = new THREE.FogExp2(0x03040a, 0.0019);
+
+  const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 2000);
+  camera.position.set(0, 1.2, 6.5);
+  camera.lookAt(0, 1.2, -10);
+
+  const FAR_Z = -900;
+  const NEAR_Z = 12;
+  const colorA = new THREE.Color(0xffffff);
+  const colorB = new THREE.Color(0x7c9bff);
+  const colorC = new THREE.Color(0x5eead4);
+  function pickColor() {
+    const r = Math.random();
+    return r < 0.75 ? colorA.clone().lerp(colorB, Math.random()) : colorA.clone().lerp(colorC, Math.random() * 0.7);
+  }
+
+  const BG_STAR_COUNT = Math.round(1600 * STAR_SCALE);
+  const bgGeom = new THREE.BufferGeometry();
+  const bgPositions = new Float32Array(BG_STAR_COUNT * 3);
+  const bgColors = new Float32Array(BG_STAR_COUNT * 3);
+  for (let i = 0; i < BG_STAR_COUNT; i++) {
+    const i3 = i * 3;
+    const radius = 300 + Math.random() * 600;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    bgPositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+    bgPositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    bgPositions[i3 + 2] = -Math.abs(radius * Math.cos(phi)) - 50;
+    const b = 0.5 + Math.random() * 0.5;
+    bgColors[i3] = bgColors[i3 + 1] = bgColors[i3 + 2] = b;
+  }
+  bgGeom.setAttribute('position', new THREE.BufferAttribute(bgPositions, 3));
+  bgGeom.setAttribute('color', new THREE.BufferAttribute(bgColors, 3));
+  const bgMat = new THREE.PointsMaterial({ size: 1.4, vertexColors: true, transparent: true, opacity: 0.7, sizeAttenuation: false, fog: false });
+  const bgStars = new THREE.Points(bgGeom, bgMat);
+  scene.add(bgStars);
+
+  function makeStreakLayer(opts) {
+    const count = Math.max(1, Math.round(opts.count * STAR_SCALE));
+    const geom = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 2 * 3);
+    const colors = new Float32Array(count * 2 * 3);
+    const stars = [];
+
+    function resetStar(i) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = opts.radiusMin + Math.sqrt(Math.random()) * (opts.radiusMax - opts.radiusMin);
+      stars[i] = {
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius * 0.6,
+        z: FAR_Z - Math.random() * 400,
+        speed: opts.speedMin + Math.random() * (opts.speedMax - opts.speedMin)
+      };
+    }
+    for (let i = 0; i < count; i++) {
+      resetStar(i);
+      stars[i].z = FAR_Z + Math.random() * (NEAR_Z - FAR_Z);
+      const c = pickColor();
+      const i6 = i * 6;
+      colors[i6] = colors[i6 + 3] = c.r;
+      colors[i6 + 1] = colors[i6 + 4] = c.g;
+      colors[i6 + 2] = colors[i6 + 5] = c.b;
+    }
+
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: opts.opacity,
+      blending: opts.additive ? THREE.AdditiveBlending : THREE.NormalBlending
+    });
+    const lines = new THREE.LineSegments(geom, mat);
+    scene.add(lines);
+
+    return {
+      update(dt, speed) {
+        const posAttr = geom.attributes.position;
+        for (let i = 0; i < count; i++) {
+          const s = stars[i];
+          s.z += speed * s.speed * dt;
+          if (s.z > NEAR_Z) resetStar(i);
+          const dist = Math.max(NEAR_Z - s.z, 0.6);
+          const len = clamp((1.5 * speed * s.speed) / dist, opts.lenMin, opts.lenMax);
+          const i6 = i * 6;
+          posAttr.array[i6] = s.x;
+          posAttr.array[i6 + 1] = s.y + 1.2;
+          posAttr.array[i6 + 2] = s.z;
+          posAttr.array[i6 + 3] = s.x;
+          posAttr.array[i6 + 4] = s.y + 1.2;
+          posAttr.array[i6 + 5] = s.z - len;
+        }
+        posAttr.needsUpdate = true;
+      }
+    };
+  }
+
+  const streakLayers = [
+    makeStreakLayer({ count: 500, radiusMin: 20, radiusMax: 42, speedMin: 0.15, speedMax: 0.3, lenMin: 0.5, lenMax: 1.2, opacity: 0.55 }),
+    makeStreakLayer({ count: 650, radiusMin: 13, radiusMax: 29, speedMin: 0.45, speedMax: 0.7, lenMin: 1.2, lenMax: 2.5, opacity: 0.75 }),
+    makeStreakLayer({ count: 600, radiusMin: 6, radiusMax: 19, speedMin: 0.9, speedMax: 1.3, lenMin: 2.5, lenMax: 5, opacity: 0.9 }),
+    makeStreakLayer({ count: 400, radiusMin: 2, radiusMax: 11, speedMin: 1.7, speedMax: 2.5, lenMin: 4.5, lenMax: 9, opacity: 1, additive: true })
+  ];
+
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let active = true;
+  document.addEventListener('visibilitychange', () => { active = !document.hidden; });
+
+  const clock = new THREE.Clock();
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if (!active) return;
+    for (const layer of streakLayers) layer.update(dt, 90);
+    bgStars.rotation.y += dt * 0.006;
+    bgStars.rotation.x += dt * 0.002;
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+
+// ============================================================================
+// Ship rig — a small, fixed HUD-style canvas (see #ship-rig in style.css) with its own static
+// camera; the ship just idles (gentle bob/yaw + the existing engine flicker) in place. The rig's
+// on-screen POSITION is what travels between sections, animated by GSAP MotionPathPlugin on the
+// outer #ship-rig div's CSS transform (see the page-driver section below) — kept completely
+// separate from the 3D scene itself, so "where the ship visually sits" is plain, predictable
+// CSS/DOM logic instead of 3D world-to-screen projection that previously kept colliding with
+// the text panels.
+// ============================================================================
+const shipReady = { model: false };
+(function shipRig() {
+  const canvas = document.getElementById('ship-canvas');
+  const rig = document.getElementById('ship-rig');
+  if (!canvas || !rig) return;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: !isLowPower, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
-  // Near-black navy instead of pure black — a small warmth that reads as "graded footage"
-  // rather than a flat WebGL clear color.
-  scene.background = new THREE.Color(0x03040a);
-  scene.fog = new THREE.FogExp2(0x03040a, 0.0019);
+  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+  camera.position.set(0, 0.3, 6.5);
+  camera.lookAt(0, 0, 0);
 
-  const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 2000);
-
-  // ---------- Lights ----------
-  scene.add(new THREE.AmbientLight(0x8891b0, 1.1));
-  const keyLight = new THREE.DirectionalLight(0xcfdaff, 1.1);
+  scene.add(new THREE.AmbientLight(0x8891b0, 1.2));
+  const keyLight = new THREE.DirectionalLight(0xcfdaff, 1.2);
   keyLight.position.set(2, 4, 3);
   scene.add(keyLight);
-  const shipFillLight = new THREE.DirectionalLight(0xf5843e, 1.8);
-  shipFillLight.position.set(-3, 1, -2);
-  scene.add(shipFillLight);
+  const fillLight = new THREE.DirectionalLight(0xf5843e, 1.8);
+  fillLight.position.set(-3, 1, -2);
+  scene.add(fillLight);
 
-  // ---------- Ship ----------
   const ship = new THREE.Group();
-  ship.rotation.order = 'YXZ'; // yaw (path heading) applied before pitch/bank, avoids gimbal fighting on tight turns
+  scene.add(ship);
   const flames = [];
-  const SHIP_TARGET_SIZE = 2.8;
-  const SHIP_BASE_Y = 1.2;
-  let modelReady = false;
   const thrusterLights = [];
-
-  function makeGlowTexture() {
-    const size = 128;
-    const c = document.createElement('canvas');
-    c.width = c.height = size;
-    const ctx = c.getContext('2d');
-    ctx.clearRect(0, 0, size, size);
-    const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    grad.addColorStop(0, 'rgba(255,255,255,1)');
-    grad.addColorStop(0.2, 'rgba(190,235,255,0.85)');
-    grad.addColorStop(0.5, 'rgba(79,200,255,0.35)');
-    grad.addColorStop(1, 'rgba(79,200,255,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, size, size);
-    const tex = new THREE.CanvasTexture(c);
-    tex.generateMipmaps = false;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    return tex;
-  }
   const glowTexture = makeGlowTexture();
+  const SHIP_TARGET_SIZE = 3.2;
 
   function makeEnginePlasma(parent, localPos, glowSize) {
     const mat = new THREE.SpriteMaterial({ map: glowTexture, color: 0x4fc8ff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.8 });
@@ -93,17 +241,15 @@ gsap.registerPlugin(Observer);
     const body = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.3, 8), hullMat);
     body.rotation.x = -Math.PI / 2;
     fallback.add(body);
-    const wingGeo = new THREE.BoxGeometry(2.2, 0.06, 0.9);
-    const wing = new THREE.Mesh(wingGeo, trimMat);
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.9), trimMat);
     wing.position.set(0, -0.05, 0.6);
     fallback.add(wing);
     fallback.scale.setScalar(0.68);
     ship.add(fallback);
-    modelReady = true;
+    shipReady.model = true;
   }
 
   const shipBaseTint = new THREE.Color(0xdedaca);
-
   const loader = new GLTFLoader();
   loader.load(
     'models/spaceship.glb',
@@ -151,7 +297,7 @@ gsap.registerPlugin(Observer);
         }
       });
 
-      modelReady = true;
+      shipReady.model = true;
     },
     undefined,
     (err) => {
@@ -160,342 +306,39 @@ gsap.registerPlugin(Observer);
     }
   );
 
-  scene.add(ship);
-
-  // ---------- Flight path: one waypoint per section, ship+camera travel it as the page scrolls ----------
-  // Lateral swing is intentionally mild (a few units, not a slalom) so the ride reads as a calm
-  // glide between destinations rather than a dizzying weave.
-  const waypointDefs = [
-    { id: 'hero', pos: new THREE.Vector3(0, SHIP_BASE_Y, 0) },
-    { id: 'about', pos: new THREE.Vector3(-4, SHIP_BASE_Y + 1, -80) },
-    { id: 'experience', pos: new THREE.Vector3(4.5, SHIP_BASE_Y - 0.6, -170) },
-    { id: 'skills', pos: new THREE.Vector3(-4, SHIP_BASE_Y + 1.2, -250) },
-    { id: 'contact', pos: new THREE.Vector3(0, SHIP_BASE_Y, -330) }
-  ];
-  const flightCurve = new THREE.CatmullRomCurve3(waypointDefs.map((w) => w.pos), false, 'catmullrom', 0.5);
-  const NUM_SEGMENTS = waypointDefs.length - 1;
-
-  // Glowing beacons mark each destination (not the hero start) so arrival reads as "reaching a place."
-  const waypointMarkers = waypointDefs.slice(1).map((w) => {
-    const mat = new THREE.SpriteMaterial({ map: glowTexture, color: 0x7c9bff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
-    const sprite = new THREE.Sprite(mat);
-    sprite.position.copy(w.pos);
-    sprite.scale.setScalar(4);
-    scene.add(sprite);
-    const light = new THREE.PointLight(0x7c9bff, 0, 24);
-    light.position.copy(w.pos);
-    scene.add(light);
-    return { sprite, light, pos: w.pos };
-  });
-
-  // ---------- Scroll -> flight-curve parameter t, driven by GSAP Observer + quickTo ----------
-  // Section pixel offsets still give the exact per-section t breakpoints (so arrival stays
-  // synced to content), but instead of ScrollTrigger's scroll-linked scrub, an Observer
-  // normalizes wheel/touch/scroll input and a quickTo() eases flightState.t toward the target
-  // on GSAP's own ticker — snappier and less laggy-feeling than a scrub timeline.
-  const flightState = { t: 0 };
-  let breakpoints = waypointDefs.map(() => 0);
-  function computeBreakpoints() {
-    breakpoints = waypointDefs.map((w) => {
-      const el = document.querySelector(`[data-waypoint="${w.id}"]`);
-      return el ? el.getBoundingClientRect().top + window.scrollY : 0;
-    });
-  }
-  function scrollT() {
-    const y = window.scrollY;
-    if (y <= breakpoints[0]) return 0;
-    for (let i = 0; i < NUM_SEGMENTS; i++) {
-      const isLast = i === NUM_SEGMENTS - 1;
-      if (y <= breakpoints[i + 1] || isLast) {
-        const span = Math.max(breakpoints[i + 1] - breakpoints[i], 1);
-        const frac = clamp((y - breakpoints[i]) / span, 0, 1);
-        return (i + frac) / NUM_SEGMENTS;
-      }
-    }
-    return 1;
-  }
-  const setFlightT = gsap.quickTo(flightState, 't', { duration: reducedMotion ? 0.001 : 0.6, ease: 'power3.out' });
-  function syncFlightTarget() { setFlightT(scrollT()); }
-
-  Observer.create({ target: window, type: 'wheel,touch,scroll', tolerance: 0, onChange: syncFlightTarget });
-  window.addEventListener('resize', () => { computeBreakpoints(); syncFlightTarget(); });
-  window.addEventListener('load', () => { computeBreakpoints(); syncFlightTarget(); });
-
-  // ---------- Warp starfield: parallax layers recentred on the camera every frame, so the tunnel
-  // travels with the ship along the whole flight path instead of sitting at a fixed world position ----------
-  const NEAR_LOCAL = 12;
-  const FAR_LOCAL = -400;
-  const colorA = new THREE.Color(0xffffff);
-  const colorB = new THREE.Color(0x7c9bff);
-  const colorC = new THREE.Color(0x5eead4);
-
-  function pickColor() {
-    const r = Math.random();
-    return r < 0.75 ? colorA.clone().lerp(colorB, Math.random()) : colorA.clone().lerp(colorC, Math.random() * 0.7);
-  }
-
-  const BG_STAR_COUNT = Math.round(1600 * STAR_SCALE);
-  const bgGeom = new THREE.BufferGeometry();
-  const bgPositions = new Float32Array(BG_STAR_COUNT * 3);
-  const bgColors = new Float32Array(BG_STAR_COUNT * 3);
-  for (let i = 0; i < BG_STAR_COUNT; i++) {
-    const i3 = i * 3;
-    const radius = 300 + Math.random() * 600;
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    bgPositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
-    bgPositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
-    bgPositions[i3 + 2] = -Math.abs(radius * Math.cos(phi)) - 50;
-    const b = 0.5 + Math.random() * 0.5;
-    bgColors[i3] = bgColors[i3 + 1] = bgColors[i3 + 2] = b;
-  }
-  bgGeom.setAttribute('position', new THREE.BufferAttribute(bgPositions, 3));
-  bgGeom.setAttribute('color', new THREE.BufferAttribute(bgColors, 3));
-  const bgMat = new THREE.PointsMaterial({ size: 1.4, vertexColors: true, transparent: true, opacity: 0.7, sizeAttenuation: false, fog: false });
-  const bgStars = new THREE.Points(bgGeom, bgMat);
-  scene.add(bgStars);
-
-  function makeStreakLayer(opts) {
-    const count = Math.max(1, Math.round(opts.count * STAR_SCALE));
-    const geom = new THREE.BufferGeometry();
-    const positions = new Float32Array(count * 2 * 3);
-    const colors = new Float32Array(count * 2 * 3);
-    const stars = [];
-
-    function resetStar(i) {
-      const angle = Math.random() * Math.PI * 2;
-      const radius = opts.radiusMin + Math.sqrt(Math.random()) * (opts.radiusMax - opts.radiusMin);
-      stars[i] = {
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius * 0.6,
-        z: FAR_LOCAL - Math.random() * 400,
-        speed: opts.speedMin + Math.random() * (opts.speedMax - opts.speedMin)
-      };
-    }
-    for (let i = 0; i < count; i++) {
-      resetStar(i);
-      stars[i].z = FAR_LOCAL + Math.random() * (NEAR_LOCAL - FAR_LOCAL);
-      const c = pickColor();
-      const i6 = i * 6;
-      colors[i6] = colors[i6 + 3] = c.r;
-      colors[i6 + 1] = colors[i6 + 4] = c.g;
-      colors[i6 + 2] = colors[i6 + 5] = c.b;
-    }
-
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({
-      vertexColors: true, transparent: true, opacity: opts.opacity,
-      blending: opts.additive ? THREE.AdditiveBlending : THREE.NormalBlending
-    });
-    const lines = new THREE.LineSegments(geom, mat);
-    scene.add(lines);
-
-    return {
-      update(dt, globalSpeed, camPos) {
-        const posAttr = geom.attributes.position;
-        for (let i = 0; i < count; i++) {
-          const s = stars[i];
-          s.z += globalSpeed * s.speed * dt;
-          if (s.z > NEAR_LOCAL) resetStar(i);
-          const dist = Math.max(NEAR_LOCAL - s.z, 0.6);
-          const len = clamp((1.5 * globalSpeed * s.speed) / dist, opts.lenMin, opts.lenMax);
-          const i6 = i * 6;
-          posAttr.array[i6] = camPos.x + s.x;
-          posAttr.array[i6 + 1] = camPos.y + s.y;
-          posAttr.array[i6 + 2] = camPos.z + s.z;
-          posAttr.array[i6 + 3] = camPos.x + s.x;
-          posAttr.array[i6 + 4] = camPos.y + s.y;
-          posAttr.array[i6 + 5] = camPos.z + s.z - len;
-        }
-        posAttr.needsUpdate = true;
-      }
-    };
-  }
-
-  const streakLayers = [
-    makeStreakLayer({ count: 500, radiusMin: 20, radiusMax: 42, speedMin: 0.15, speedMax: 0.3, lenMin: 0.5, lenMax: 1.2, opacity: 0.55 }),
-    makeStreakLayer({ count: 650, radiusMin: 13, radiusMax: 29, speedMin: 0.45, speedMax: 0.7, lenMin: 1.2, lenMax: 2.5, opacity: 0.75 }),
-    makeStreakLayer({ count: 600, radiusMin: 6, radiusMax: 19, speedMin: 0.9, speedMax: 1.3, lenMin: 2.5, lenMax: 5, opacity: 0.9 }),
-    makeStreakLayer({ count: 400, radiusMin: 2, radiusMax: 11, speedMin: 1.7, speedMax: 2.5, lenMin: 4.5, lenMax: 9, opacity: 1, additive: true })
-  ];
-
-  // ---------- Input: subtle look-around only (scroll drives actual travel now) ----------
-  const input = { x: 0, y: 0 };
-  const keyState = {};
-
-  window.addEventListener('keydown', (e) => { keyState[e.key.toLowerCase()] = true; });
-  window.addEventListener('keyup', (e) => { keyState[e.key.toLowerCase()] = false; });
-
-  const HOVER_SENSITIVITY = 0.16;
-  function hoverMove(clientX, clientY) {
-    const nx = ((clientX / window.innerWidth) * 2 - 1) * HOVER_SENSITIVITY;
-    const ny = ((clientY / window.innerHeight) * 2 - 1) * HOVER_SENSITIVITY;
-    input.x = clamp(nx, -1, 1);
-    input.y = clamp(-ny, -1, 1);
-  }
-
-  let dragging = false;
-  let dragStart = { x: 0, y: 0 };
-  let dragOrigin = { x: 0, y: 0 };
-
-  function touchDown(clientX, clientY) {
-    dragging = true;
-    dragStart = { x: clientX, y: clientY };
-    dragOrigin = { x: input.x, y: input.y };
-  }
-  function touchMove(clientX, clientY) {
-    if (!dragging) return;
-    const dx = (clientX - dragStart.x) / window.innerWidth;
-    const dy = (clientY - dragStart.y) / window.innerHeight;
-    input.x = clamp(dragOrigin.x - dx * 2.4, -1, 1);
-    input.y = clamp(dragOrigin.y - dy * 2.4, -1, 1);
-  }
-  function touchUp() { dragging = false; }
-
-  window.addEventListener('pointermove', (e) => {
-    if (e.pointerType === 'touch') touchMove(e.clientX, e.clientY);
-    else hoverMove(e.clientX, e.clientY);
-  });
-  canvas.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'touch') touchDown(e.clientX, e.clientY);
-  });
-  window.addEventListener('pointerup', touchUp);
-  canvas.style.pointerEvents = 'auto';
-
-  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-
-  function keyboardInput(dt) {
-    let kx = 0, ky = 0;
-    if (keyState['a'] || keyState['arrowleft']) kx -= 1;
-    if (keyState['d'] || keyState['arrowright']) kx += 1;
-    if (keyState['w'] || keyState['arrowup']) ky += 1;
-    if (keyState['s'] || keyState['arrowdown']) ky -= 1;
-    if (kx || ky) {
-      input.x = clamp(input.x + kx * dt * 1.6, -1, 1);
-      input.y = clamp(input.y + ky * dt * 1.6, -1, 1);
-    }
-  }
-
-  // ---------- Resize ----------
   function resize() {
-    const w = window.innerWidth, h = window.innerHeight;
-    renderer.setSize(w, h);
+    const w = rig.clientWidth || 1, h = rig.clientHeight || 1;
+    renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
   window.addEventListener('resize', resize);
   resize();
-  computeBreakpoints();
-  syncFlightTarget();
 
-  // ---------- Intro sequence: unchanged from V1, ship settles onto the flight path's start point ----------
-  const REST_SCALE = 1.5;
-  const REST_POS = waypointDefs[0].pos.clone();
-  const introStages = [
-    { pos: new THREE.Vector3(0, SHIP_BASE_Y, -190), scale: 0.05 },
-    { pos: REST_POS.clone(), scale: REST_SCALE },
-    { pos: new THREE.Vector3(0, -13, 7), scale: REST_SCALE * 4 },
-    { pos: REST_POS.clone(), scale: REST_SCALE }
-  ];
-  const introStageDurations = [2.0, 1.0, 1.5];
+  // Gentle scale/opacity settle-in once the model is ready, instead of the old multi-stage
+  // fly-in — the rig is a small fixed HUD element now, not a camera flying through the world.
+  gsap.set(rig, { opacity: 0, scale: 0.85, transformOrigin: '50% 50%' });
+  const introTicker = setInterval(() => {
+    if (shipReady.model) {
+      clearInterval(introTicker);
+      gsap.to(rig, { opacity: 1, scale: 1, duration: reducedMotion ? 0.2 : 1.1, ease: 'power3.out' });
+    }
+  }, 80);
 
-  function linear(t) { return t; }
-  function easeInCubic(t) { return t * t * t; }
-  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
-  const introStageEasings = [easeInCubic, linear, easeOutCubic];
-
-  let introStageIndex = 0;
-  let introStageT = 0;
-  let introDone = false;
-
-  ship.position.copy(introStages[0].pos);
-  ship.scale.setScalar(introStages[0].scale);
-
-  // ---------- Animation loop ----------
-  const clock = new THREE.Clock();
-  const CAM_DISTANCE = 6.5;
-  const CAM_HEIGHT = 2.0;
-  const LOOKAHEAD = 10;
-  const FRAME_BIAS = 2.6;
-  const tmpTangent = new THREE.Vector3();
-  const tmpUp = new THREE.Vector3(0, 1, 0);
-  const tmpRight = new THREE.Vector3();
-  const tmpCamTarget = new THREE.Vector3();
-  const tmpLookTarget = new THREE.Vector3();
   let active = true;
-
   document.addEventListener('visibilitychange', () => { active = !document.hidden; });
 
+  const clock = new THREE.Clock();
   function animate() {
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.05);
     if (!active) return;
 
-    keyboardInput(dt);
-
-    if (modelReady && !introDone) {
-      introStageT += dt;
-      const duration = introStageDurations[introStageIndex];
-      const t = Math.min(introStageT / duration, 1);
-      const eased = introStageEasings[introStageIndex](t);
-      const from = introStages[introStageIndex];
-      const to = introStages[introStageIndex + 1];
-      ship.position.lerpVectors(from.pos, to.pos, eased);
-      ship.scale.setScalar(THREE.MathUtils.lerp(from.scale, to.scale, eased));
-      if (t >= 1) {
-        introStageIndex++;
-        introStageT = 0;
-        if (introStageIndex >= introStageDurations.length) introDone = true;
-      }
-      camera.position.set(REST_POS.x, REST_POS.y + CAM_HEIGHT, REST_POS.z + CAM_DISTANCE);
-      camera.lookAt(REST_POS.x, REST_POS.y, REST_POS.z - LOOKAHEAD);
-    } else if (modelReady) {
-      // flightState.t is driven entirely by the Observer + quickTo pair above, already eased
-      // toward the scroll-derived target — no extra per-frame smoothing needed here.
-      const t = clamp(flightState.t, 0, 1);
-      const shipPoint = flightCurve.getPoint(t);
-      tmpTangent.copy(flightCurve.getTangent(clamp(t, 0.001, 0.999))).normalize();
-      tmpRight.crossVectors(tmpTangent, tmpUp).normalize();
-
-      ship.position.copy(shipPoint);
-      const yawTarget = Math.atan2(tmpTangent.x, tmpTangent.z) + Math.PI;
-      ship.rotation.y = THREE.MathUtils.lerp(ship.rotation.y, yawTarget, Math.min(dt * 3, 1));
-      ship.rotation.z = THREE.MathUtils.lerp(ship.rotation.z, -input.x * 0.25, dt * 4);
-      ship.rotation.x = THREE.MathUtils.lerp(ship.rotation.x, input.y * 0.12, dt * 4);
-
-      tmpCamTarget.copy(shipPoint)
-        .addScaledVector(tmpTangent, -CAM_DISTANCE)
-        .addScaledVector(tmpUp, CAM_HEIGHT)
-        .addScaledVector(tmpRight, input.x * 0.6);
-      camera.position.lerp(tmpCamTarget, Math.min(dt * 5, 1));
-
-      // Section content panels sit left-aligned (see .panel in style.css) — bias the look target
-      // left of the ship so the ship itself renders in the cleared right-hand portion of the
-      // frame instead of straight ahead, where it would otherwise sit right behind the text.
-      tmpLookTarget.copy(shipPoint)
-        .addScaledVector(tmpTangent, LOOKAHEAD)
-        .addScaledVector(tmpUp, input.y * 0.5)
-        .addScaledVector(tmpRight, -FRAME_BIAS);
-      camera.lookAt(tmpLookTarget);
-      camera.rotation.z = THREE.MathUtils.lerp(camera.rotation.z, -input.x * 0.03, dt * 4);
-
-      // Small idle drift so the shot never sits perfectly still between scroll input — reads as
-      // a held cinematic camera rather than a locked-off static one.
-      if (!reducedMotion) {
-        camera.position.x += Math.sin(performance.now() * 0.00035) * 0.12;
-        camera.position.y += Math.cos(performance.now() * 0.00028) * 0.06;
-      }
-
-      // Waypoint beacons brighten as the ship closes in, so arriving at a section reads as
-      // "reaching a destination" rather than just scrolling past a marker.
-      for (const marker of waypointMarkers) {
-        const dist = shipPoint.distanceTo(marker.pos);
-        const proximity = clamp(1 - dist / 45, 0, 1);
-        const pulse = 0.85 + Math.sin(performance.now() * 0.004) * 0.15;
-        marker.sprite.material.opacity = proximity * 0.9 * pulse;
-        marker.light.intensity = proximity * 2.2 * pulse;
-      }
+    if (shipReady.model && !reducedMotion) {
+      const t = performance.now() * 0.001;
+      ship.rotation.y = Math.sin(t * 0.4) * 0.18;
+      ship.rotation.z = Math.sin(t * 0.5 + 1) * 0.06;
+      ship.position.y = Math.sin(t * 0.6) * 0.08;
     }
 
     const flicker = 1 + Math.sin(performance.now() * 0.02) * 0.12 + Math.random() * 0.08;
@@ -507,15 +350,50 @@ gsap.registerPlugin(Observer);
       light.intensity = 1.4 + Math.sin(performance.now() * 0.03) * 0.25 + Math.random() * 0.15;
     }
 
-    const speed = 90 * (1 + Math.abs(input.x) * 0.15);
-    for (const layer of streakLayers) layer.update(dt, speed, camera.position);
-
-    bgStars.position.copy(camera.position);
-    bgStars.rotation.y += dt * 0.006;
-    bgStars.rotation.x += dt * 0.002;
-
     renderer.render(scene, camera);
   }
-
   animate();
+})();
+
+// ============================================================================
+// Page driver — moves the #ship-rig element between small, safe on-screen offsets (all well
+// inside the right-hand gutter established by .panel's layout) as the page scrolls through each
+// section, using GSAP MotionPathPlugin for a smooth curved path through those points, scrubbed
+// by ScrollTrigger tied to the actual section elements. Deliberately small hand-picked offsets
+// (tens of px) rather than deriving path points from raw DOM measurements of off-screen content
+// — with sections of very different heights (Experience vs. the others), raw measurements would
+// reproduce the same fragility that broke the previous 3D version.
+// ============================================================================
+(function pageDriver() {
+  const rig = document.getElementById('ship-rig');
+  if (!rig) return;
+
+  const waypointOffsets = [
+    { id: 'hero', x: 0, y: 0 },
+    { id: 'about', x: -36, y: -64 },
+    { id: 'experience', x: 30, y: 46 },
+    { id: 'skills', x: -32, y: -38 },
+    { id: 'contact', x: 0, y: 0 }
+  ];
+
+  function build() {
+    const startEl = document.querySelector('[data-waypoint="hero"]');
+    const endEl = document.querySelector('[data-waypoint="contact"]');
+    if (!startEl || !endEl) return;
+
+    gsap.timeline({
+      scrollTrigger: {
+        trigger: startEl,
+        start: 'top top',
+        endTrigger: endEl,
+        end: 'top top',
+        scrub: reducedMotion ? true : 1
+      }
+    }).fromTo(rig,
+      { x: waypointOffsets[0].x, y: waypointOffsets[0].y },
+      { motionPath: { path: waypointOffsets, curviness: 1.2 }, ease: 'none', duration: 1 }
+    );
+  }
+
+  build();
 })();

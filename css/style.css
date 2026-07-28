@@ -33,6 +33,28 @@ body {
   background: #000;
 }
 
+/* The ship's own small, fixed HUD-style canvas. Deliberately z-index'd above every section's
+   .panel (z-index: 1) so it is ALWAYS visible, on top of content if it ever has to be, instead
+   of the ship being just another world-space object that a text panel can end up in front of
+   and blur out — that exact bug is what broke the previous 3D-camera version of this page. Its
+   on-screen position is animated by GSAP MotionPathPlugin (see warp-ship.js) between small,
+   hand-picked offsets that stay inside this safe right-hand gutter. */
+.ship-rig {
+  position: fixed;
+  top: 50%;
+  right: 7vw;
+  width: 260px;
+  height: 170px;
+  transform: translateY(-50%);
+  z-index: 2;
+  pointer-events: none;
+}
+#ship-canvas { width: 100%; height: 100%; display: block; }
+
+@media (max-width: 720px) {
+  .ship-rig { width: 160px; height: 105px; right: 4vw; top: 18%; }
+}
+
 /* Every section (including the hero) is a full-viewport "scroll stop" along the flight
    path — transparent so the 3D scene stays visible behind/around the content the whole
    time, instead of the opaque background V1 uses past the hero. */
