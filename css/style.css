@@ -32,8 +32,6 @@ a:hover { text-decoration-color: var(--accent); color: var(--accent); }
 .hero { padding-bottom: 48px; }
 .prompt { font: 400 14px "JetBrains Mono", monospace; color: var(--muted); margin: 0 0 20px; }
 .prompt span:first-child { color: var(--accent); }
-.cursor { display: inline-block; width: 8px; height: 15px; margin-left: 4px; vertical-align: -2px; background: var(--accent); animation: blink 1.1s steps(1) infinite; }
-@keyframes blink { 50% { opacity: 0; } }
 h1 { font-size: clamp(32px, 7vw, 44px); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 16px; font-weight: 600; }
 .lead { font-size: 18px; margin: 0 0 12px; }
 .meta { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
@@ -66,4 +64,3 @@ footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8p
   .job, .stack { grid-template-columns: 1fr; gap: 2px; }
   .stack dd { margin-bottom: 10px; }
 }
-@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
